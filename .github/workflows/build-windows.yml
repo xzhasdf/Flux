@@ -1,0 +1,93 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Download bundled binaries (yt-dlp / ffmpeg / aria2c)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+
+          # yt-dlp（最新稳定版）
+          Write-Host "↓ yt-dlp"
+          Invoke-WebRequest `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -OutFile "bin/yt-dlp.exe"
+
+          # ffmpeg（gpl 完整版，含 libx264）
+          Write-Host "↓ ffmpeg"
+          Invoke-WebRequest `
+            -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" `
+            -OutFile "ffmpeg.zip"
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+          Copy-Item (Get-ChildItem -Path ffmpeg_tmp -Filter "ffmpeg.exe" -Recurse).FullName `
+            -Destination "bin/ffmpeg.exe"
+          Remove-Item -Recurse -Force ffmpeg.zip, ffmpeg_tmp
+
+          # aria2c
+          Write-Host "↓ aria2c"
+          Invoke-WebRequest `
+            -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" `
+            -OutFile "aria2.zip"
+          Expand-Archive aria2.zip -DestinationPath aria2_tmp -Force
+          Copy-Item (Get-ChildItem -Path aria2_tmp -Filter "aria2c.exe" -Recurse).FullName `
+            -Destination "bin/aria2c.exe"
+          Remove-Item -Recurse -Force aria2.zip, aria2_tmp
+
+          Get-ChildItem bin
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm install
+
+      - name: Build Windows app
+        run: wails build -platform windows/amd64 -clean
+
+      - name: Package release (exe + bin) as zip
+        shell: pwsh
+        run: |
+          $dist = "Flux-windows-amd64"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item "build/bin/Flux.exe" "$dist/Flux.exe"
+          Copy-Item -Recurse "bin" "$dist/bin"
+          Compress-Archive -Path "$dist/*" -DestinationPath "$dist.zip" -Force
+          Get-ChildItem "$dist.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flux-windows-amd64
+          path: Flux-windows-amd64.zip
+          retention-days: 30
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Flux-windows-amd64.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
