@@ -1,0 +1,35 @@
+# Bundled binary tools — too large for git, CI downloads them
+bin/yt-dlp
+bin/yt-dlp.exe
+bin/ffmpeg
+bin/ffmpeg.exe
+bin/aria2c
+bin/aria2c.exe
+bin/lib/
+
+# Build artifacts
+build/bin/
+build/darwin/build/
+build/windows/installer/Flux-*.exe
+frontend/dist/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Go
+*.test
+*.prof
+
+# OS / IDE
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs
+*.log
