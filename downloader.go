@@ -67,6 +67,10 @@ var (
 	ffmpegBitrateRe  = regexp.MustCompile(`bitrate:\s*(\d+(?:\.\d+)?)\s*kb/s`)
 	ffmpegTimeRe     = regexp.MustCompile(`time=(\d+):(\d+):([\d.]+)`)
 	ffmpegSpeedRe    = regexp.MustCompile(`speed=\s*([\d.]+)x`)
+	// aria2c 状态行: [#b864db 666MiB/1.1GiB(56%) CN:15 SD:3 DL:7.7MiB UL:91KiB(35MiB) ETA:1m5s]
+	aria2ProgressRe = regexp.MustCompile(`\[#\w+\s+\S+/\S+\((\d+(?:\.\d+)?)%\)`)
+	aria2SpeedRe    = regexp.MustCompile(`DL:([^\s\]]+)`)
+	aria2EtaRe      = regexp.MustCompile(`ETA:([^\s\]]+)`)
 )
 
 // 把 ffmpeg 的 speed 倍率 + 源码率换算成可读速率
@@ -563,7 +567,7 @@ func downloadM3U8(ctx context.Context, req M3U8Request, emit func(string)) {
 	emit("\n🎉 所有任务完成")
 }
 
-func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string)) {
+func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string), emitProgress func(ProgressEvent)) {
 	aria2c := getBinPath("aria2c")
 	total := len(req.Links)
 	emit(fmt.Sprintf("\n🧲 共 %d 个磁力任务", total))
@@ -624,15 +628,32 @@ func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string)) {
 		}
 
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		lineEmit := func(line string) { emit(tag + line) }
+		shortLink := truncate(link, 60)
+		lineEmit := func(line string) {
+			emit(tag + line)
+			if m := aria2ProgressRe.FindStringSubmatch(line); m != nil {
+				percent, _ := strconv.ParseFloat(m[1], 64)
+				ev := ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Percent: percent, Status: "downloading"}
+				if sm := aria2SpeedRe.FindStringSubmatch(line); sm != nil {
+					ev.Speed = sm[1] + "/s"
+				}
+				if em := aria2EtaRe.FindStringSubmatch(line); em != nil {
+					ev.ETA = em[1]
+				}
+				emitProgress(ev)
+			}
+		}
 		if err := streamCommand(ctx, lineEmit, cmd); err != nil {
 			if ctx.Err() != nil {
 				emit(tag + "⏹ 已终止")
+				emitProgress(ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Status: "stopped"})
 			} else {
 				emit(fmt.Sprintf("%s❌ 失败: %v", tag, err))
+				emitProgress(ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Status: "failed"})
 			}
 		} else {
 			emit(tag + "✅ 下载完成")
+			emitProgress(ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Percent: 100, Status: "done"})
 		}
 	}
 	emit("\n🎉 所有磁力任务完成")

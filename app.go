@@ -197,9 +197,10 @@ func (a *App) StartMagnet(req MagnetRequest) {
 	a.cancelFunc = cancel
 
 	emit := func(msg string) { runtime.EventsEmit(a.ctx, "download:log", msg) }
+	emitProgress := func(p ProgressEvent) { runtime.EventsEmit(a.ctx, "download:progress", p) }
 	go func() {
 		defer func() { runtime.EventsEmit(a.ctx, "download:done", nil) }()
-		downloadMagnet(ctx, req, emit)
+		downloadMagnet(ctx, req, emit, emitProgress)
 	}()
 }
 
