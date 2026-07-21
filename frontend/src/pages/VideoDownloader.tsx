@@ -2,14 +2,17 @@ import { useState, useEffect } from 'react'
 import { StartDownload, StartM3U8, StartMagnet, StopDownload, OpenDirectoryDialog, OpenFileDialog, OpenInFileManager, ParseVideoInfo } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { Card, Field, DirInput, SegmentedControl, CheckBox, Btn, Row, Textarea, Input, LogPanel, ProgressBar, VideoInfoCard, HelpTooltip, type VideoInfoData } from '../components/ui'
+import { HistoryPanel, type HistoryRecord } from '../components/HistoryPanel'
 import { loadSetting, saveSetting } from '../theme'
 
-type SubTab = 'general' | 'm3u8' | 'magnet'
+type SubTab = 'general' | 'm3u8' | 'magnet' | 'history'
 type Quality = 'best' | '4k' | '2k' | '1080p' | '720p' | '480p' | '360p'
 type VideoFormat = 'mp4' | 'mkv' | 'webm' | 'mp3'
 type CookieMode = 'none' | 'browser' | 'file'
 
 interface ProgressState {
+  jobId: string
+  seq: number
   taskIdx: number
   total: number
   url: string
@@ -20,13 +23,22 @@ interface ProgressState {
   status: 'downloading' | 'done' | 'failed' | 'stopped'
 }
 
+// 一次 Start* 调用 = 一个可并行的任务
+interface JobState {
+  id: string
+  seq: number
+  title: string
+  progress: ProgressState | null
+}
+
 export default function VideoDownloader() {
   const [subTab, setSubTab] = useState<SubTab>('general')
   const [saveDir, setSaveDir] = useState(() => loadSetting('video.saveDir'))
   useEffect(() => saveSetting('video.saveDir', saveDir), [saveDir])
-  const [running, setRunning] = useState(false)
+  const [jobs, setJobs] = useState<Record<string, JobState>>({})
   const [logs, setLogs] = useState<string[]>([])
-  const [progress, setProgress] = useState<ProgressState | null>(null)
+  const jobList = Object.values(jobs).sort((a, b) => a.seq - b.seq)
+  const running = jobList.length > 0
 
   // General
   const [urls, setUrls] = useState('')
@@ -61,10 +73,28 @@ export default function VideoDownloader() {
   const [extraTracker, setExtraTracker] = useState(true)
 
   useEffect(() => {
-    const offLog = EventsOn('download:log', (msg: string) => setLogs(prev => [...prev, msg]))
-    const offProgress = EventsOn('download:progress', (p: ProgressState) => setProgress(p))
-    const offDone = EventsOn('download:done', () => setRunning(false))
-    return () => { offLog(); offProgress(); offDone() }
+    const offStarted = EventsOn('download:started', (j: { id: string; seq: number; title: string }) => {
+      setJobs(prev => ({ ...prev, [j.id]: { id: j.id, seq: j.seq, title: j.title, progress: prev[j.id]?.progress ?? null } }))
+    })
+    const offLog = EventsOn('download:log', (e: { jobId: string; seq: number; msg: string }) => {
+      setLogs(prev => [...prev, `#${e.seq} ${e.msg.replace(/^\n+/, '')}`])
+    })
+    const offProgress = EventsOn('download:progress', (p: ProgressState) => {
+      setJobs(prev => ({
+        ...prev,
+        [p.jobId]: prev[p.jobId]
+          ? { ...prev[p.jobId], progress: p }
+          : { id: p.jobId, seq: p.seq, title: p.url, progress: p },
+      }))
+    })
+    const offDone = EventsOn('download:done', (j: { id: string }) => {
+      setJobs(prev => {
+        const next = { ...prev }
+        delete next[j.id]
+        return next
+      })
+    })
+    return () => { offStarted(); offLog(); offProgress(); offDone() }
   }, [])
 
   async function pickSaveDir() {
@@ -84,9 +114,7 @@ export default function VideoDownloader() {
     if (!urlList.length) { appendLog('❌ 请输入视频 URL'); return }
     if (!saveDir) { appendLog('❌ 请选择保存目录'); return }
 
-    setRunning(true)
-    setLogs([])
-    setProgress(null)
+    if (!running) setLogs([])
     setVideoInfo(null)
     setParseError('')
 
@@ -109,9 +137,7 @@ export default function VideoDownloader() {
     const urlList = m3u8Urls.split('\n').map(u => u.trim()).filter(Boolean)
     if (!urlList.length) { appendLog('❌ 请输入 M3U8 地址'); return }
     if (!saveDir) { appendLog('❌ 请选择保存目录'); return }
-    setRunning(true)
-    setLogs([])
-    setProgress(null)
+    if (!running) setLogs([])
     await StartM3U8({ urls: urlList, saveDir })
   }
 
@@ -119,36 +145,56 @@ export default function VideoDownloader() {
     const linkList = magnetLinks.split('\n').map(l => l.trim()).filter(Boolean)
     if (!linkList.length) { appendLog('❌ 请输入磁力链接'); return }
     if (!saveDir) { appendLog('❌ 请选择保存目录'); return }
-    setRunning(true)
-    setLogs([])
-    setProgress(null)
+    if (!running) setLogs([])
     await StartMagnet({ links: linkList, saveDir, dlLimit, ulLimit, maxConn, seedTime, extraTracker })
   }
 
-  async function stop() {
-    await StopDownload()
-    setRunning(false)
+  async function stopJob(id: string) {
+    await StopDownload(id)
+  }
+
+  async function stopAll() {
+    await StopDownload('')
+  }
+
+  // 从历史记录继续/重试：用原参数重新发起，可与进行中的任务并行。
+  // yt-dlp 靠 .part 文件、aria2c 靠 .aria2 控制文件断点续传；M3U8（ffmpeg）会重新下载。
+  async function resumeRecord(r: HistoryRecord) {
+    let payload: any
+    try { payload = JSON.parse(r.payload) } catch { appendLog('❌ 历史记录已损坏，无法恢复'); return }
+
+    if (!running) setLogs([])
+    appendLog(`▶ 从历史记录继续：${r.title}`)
+
+    if (r.type === 'general') await StartDownload(payload)
+    else if (r.type === 'm3u8') await StartM3U8(payload)
+    else if (r.type === 'magnet') await StartMagnet(payload)
   }
 
   const SUB_TABS: { id: SubTab; label: string }[] = [
     { id: 'general', label: '通用下载' },
     { id: 'm3u8', label: 'M3U8' },
     { id: 'magnet', label: '磁力/种子' },
+    { id: 'history', label: '历史记录' },
   ]
 
-  // Build progress display
-  const progressLabel = progress
-    ? (progress.total > 1 ? `[${progress.taskIdx + 1}/${progress.total}] ` : '')
-      + (progress.track ? `${progress.track} · ` : '')
-      + progress.url
-    : (running ? '准备中…' : '')
+  function jobLabel(j: JobState) {
+    const p = j.progress
+    return `#${j.seq} `
+      + (p && p.total > 1 ? `[${p.taskIdx + 1}/${p.total}] ` : '')
+      + (p?.track ? `${p.track} · ` : '')
+      + (p?.url || j.title)
+  }
 
-  const progressSublabel = progress && progress.status === 'downloading'
-    ? `速度: ${progress.speed || '—'}    剩余: ${progress.eta || '—'}`
-    : progress?.status === 'done' ? '✅ 已完成'
-    : progress?.status === 'failed' ? '❌ 失败'
-    : progress?.status === 'stopped' ? '⏹ 已停止'
-    : ''
+  function jobSublabel(j: JobState) {
+    const p = j.progress
+    if (!p) return '准备中…'
+    if (p.status === 'downloading') return `速度: ${p.speed || '—'}    剩余: ${p.eta || '—'}`
+    if (p.status === 'done') return '✅ 已完成'
+    if (p.status === 'failed') return '❌ 失败'
+    if (p.status === 'stopped') return '⏹ 已停止'
+    return ''
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: 20, gap: 12 }}>
@@ -255,6 +301,14 @@ export default function VideoDownloader() {
             </Card>
           )}
 
+          {subTab === 'history' && (
+            <HistoryPanel
+              types={['general', 'm3u8', 'magnet']}
+              onResume={resumeRecord}
+              busy={false}
+            />
+          )}
+
           {subTab === 'magnet' && (
             <Card style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <Field label="磁力链接 / 种子路径（每行一个）">
@@ -279,13 +333,14 @@ export default function VideoDownloader() {
           )}
 
           <Row>
-            {!running ? (
+            {subTab !== 'history' && (
               <Btn onClick={subTab === 'general' ? startGeneral : subTab === 'm3u8' ? startM3U8 : startMagnet} style={{ minWidth: 120 }}>
                 开始下载
               </Btn>
-            ) : (
-              <Btn variant="danger" onClick={stop} style={{ minWidth: 120 }}>
-                停止
+            )}
+            {running && (
+              <Btn variant="danger" onClick={stopAll} style={{ minWidth: 100 }}>
+                全部停止 ({jobList.length})
               </Btn>
             )}
           </Row>
@@ -310,14 +365,22 @@ export default function VideoDownloader() {
               ❌ 解析失败：{parseError}
             </div>
           )}
-          {(running || progress) && (
-            <ProgressBar
-              percent={progress?.percent ?? 0}
-              label={progressLabel}
-              sublabel={progressSublabel}
-              status={progress?.status || 'downloading'}
-            />
-          )}
+          {jobList.map(j => (
+            <div key={j.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <ProgressBar
+                  percent={j.progress?.percent ?? 0}
+                  label={jobLabel(j)}
+                  sublabel={jobSublabel(j)}
+                  status={j.progress?.status || 'downloading'}
+                />
+              </div>
+              <Btn variant="danger" onClick={() => stopJob(j.id)}
+                style={{ padding: '6px 12px', fontSize: 12, flexShrink: 0 }}>
+                停止
+              </Btn>
+            </div>
+          ))}
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <LogPanel lines={logs} />
           </div>

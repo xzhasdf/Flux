@@ -6,12 +6,28 @@ export function CheckFFmpeg() {
   return window['go']['main']['App']['CheckFFmpeg']();
 }
 
+export function ClearHistory() {
+  return window['go']['main']['App']['ClearHistory']();
+}
+
 export function ClearVideoInfoCache() {
   return window['go']['main']['App']['ClearVideoInfoCache']();
 }
 
 export function ConvertFolder(arg1) {
   return window['go']['main']['App']['ConvertFolder'](arg1);
+}
+
+export function DeleteHistory(arg1) {
+  return window['go']['main']['App']['DeleteHistory'](arg1);
+}
+
+export function GetHistory() {
+  return window['go']['main']['App']['GetHistory']();
+}
+
+export function HasActiveTasks() {
+  return window['go']['main']['App']['HasActiveTasks']();
 }
 
 export function OpenDirectoryDialog(arg1) {
@@ -46,6 +62,6 @@ export function StartMagnet(arg1) {
   return window['go']['main']['App']['StartMagnet'](arg1);
 }
 
-export function StopDownload() {
-  return window['go']['main']['App']['StopDownload']();
+export function StopDownload(arg1) {
+  return window['go']['main']['App']['StopDownload'](arg1);
 }

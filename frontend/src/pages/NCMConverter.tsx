@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ConvertFolder, OpenDirectoryDialog, OpenInFileManager } from '../../wailsjs/go/main/App'
 import { Card, Field, DirInput, SegmentedControl, CheckBox, Btn, Badge, Row, Grid } from '../components/ui'
+import { HistoryPanel, type HistoryRecord } from '../components/HistoryPanel'
 import { loadSetting, saveSetting } from '../theme'
 
 type Format = 'flac' | 'mp3' | 'wav' | 'm4a' | 'ogg'
@@ -69,23 +70,13 @@ export default function NCMConverter() {
     if (dir) setOutputDir(dir)
   }
 
-  async function run() {
-    if (!inputDir) { setError('请选择输入目录'); return }
-    if (exts.length === 0) { setError('请至少选择一个扩展名'); return }
+  async function runWith(req: any) {
     setError('')
     setRunning(true)
     setResults([])
     setSummary(null)
     try {
-      const resp = await ConvertFolder({
-        inputDir,
-        outputDir: outputDir || inputDir,
-        format,
-        bitrate,
-        overwrite,
-        workers,
-        extensions: exts,
-      })
+      const resp = await ConvertFolder(req)
       if (resp.error) {
         setError(resp.error)
       } else {
@@ -96,6 +87,30 @@ export default function NCMConverter() {
       setError(String(e))
     } finally {
       setRunning(false)
+    }
+  }
+
+  async function run() {
+    if (!inputDir) { setError('请选择输入目录'); return }
+    if (exts.length === 0) { setError('请至少选择一个扩展名'); return }
+    await runWith({
+      inputDir,
+      outputDir: outputDir || inputDir,
+      format,
+      bitrate,
+      overwrite,
+      workers,
+      extensions: exts,
+    })
+  }
+
+  // 从历史记录重跑：不覆盖模式下已转完的文件会自动跳过，相当于断点续转
+  async function resumeRecord(r: HistoryRecord) {
+    if (running) return
+    try {
+      await runWith(JSON.parse(r.payload))
+    } catch {
+      setError('历史记录已损坏，无法恢复')
     }
   }
 
@@ -193,6 +208,12 @@ export default function NCMConverter() {
           </Row>
         )}
       </Row>
+
+      <Card>
+        <Field label="转码历史">
+          <HistoryPanel types={['convert']} onResume={resumeRecord} busy={running} />
+        </Field>
+      </Card>
 
       {results.length > 0 && (
         <Card style={{ padding: 0, overflow: 'hidden' }}>

@@ -4,9 +4,17 @@ import {main} from '../models';
 
 export function CheckFFmpeg():Promise<boolean>;
 
+export function ClearHistory():Promise<number>;
+
 export function ClearVideoInfoCache():Promise<number>;
 
 export function ConvertFolder(arg1:main.NCMConvertRequest):Promise<main.NCMConvertResponse>;
+
+export function DeleteHistory(arg1:string):Promise<void>;
+
+export function GetHistory():Promise<Array<main.HistoryRecord>>;
+
+export function HasActiveTasks():Promise<boolean>;
 
 export function OpenDirectoryDialog(arg1:string):Promise<string>;
 
@@ -18,10 +26,10 @@ export function OpenInFileManager(arg1:string):Promise<void>;
 
 export function ParseVideoInfo(arg1:main.ParseInfoRequest):Promise<main.VideoInfo>;
 
-export function StartDownload(arg1:main.DownloadRequest):Promise<void>;
+export function StartDownload(arg1:main.DownloadRequest):Promise<main.JobInfo>;
 
-export function StartM3U8(arg1:main.M3U8Request):Promise<void>;
+export function StartM3U8(arg1:main.M3U8Request):Promise<main.JobInfo>;
 
-export function StartMagnet(arg1:main.MagnetRequest):Promise<void>;
+export function StartMagnet(arg1:main.MagnetRequest):Promise<main.JobInfo>;
 
-export function StopDownload():Promise<void>;
+export function StopDownload(arg1:string):Promise<void>;

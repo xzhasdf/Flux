@@ -72,6 +72,52 @@ export namespace main {
 	        this.duration = source["duration"];
 	    }
 	}
+	export class HistoryRecord {
+	    id: string;
+	    type: string;
+	    title: string;
+	    count: number;
+	    saveDir: string;
+	    status: string;
+	    detail: string;
+	    payload: string;
+	    createdAt: number;
+	    updatedAt: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HistoryRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.type = source["type"];
+	        this.title = source["title"];
+	        this.count = source["count"];
+	        this.saveDir = source["saveDir"];
+	        this.status = source["status"];
+	        this.detail = source["detail"];
+	        this.payload = source["payload"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
+	export class JobInfo {
+	    id: string;
+	    seq: number;
+	    title: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new JobInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.seq = source["seq"];
+	        this.title = source["title"];
+	    }
+	}
 	export class M3U8Request {
 	    urls: string[];
 	    saveDir: string;

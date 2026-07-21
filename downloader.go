@@ -49,6 +49,8 @@ type MagnetRequest struct {
 }
 
 type ProgressEvent struct {
+	JobID   string  `json:"jobId"` // 所属任务（一次 Start* 调用），支持多任务并行
+	Seq     int     `json:"seq"`   // 任务序号（本次启动内递增），前端显示 #n
 	TaskIdx int     `json:"taskIdx"`
 	Total   int     `json:"total"`
 	URL     string  `json:"url"`
@@ -57,6 +59,13 @@ type ProgressEvent struct {
 	ETA     string  `json:"eta"`
 	Track   string  `json:"track"`
 	Status  string  `json:"status"` // downloading | done | failed | stopped
+}
+
+// LogEvent 带任务标识的日志行，前端据此给混流日志加 #n 前缀
+type LogEvent struct {
+	JobID string `json:"jobId"`
+	Seq   int    `json:"seq"`
+	Msg   string `json:"msg"`
 }
 
 var (
@@ -249,6 +258,7 @@ func buildYtdlpArgs(req DownloadRequest, url string) []string {
 		"--format", fmtStr,
 		"--output", filepath.Join(req.SaveDir, "%(title)s.%(ext)s"),
 		"--ffmpeg-location", ffmpegDir,
+		"--continue", // 保留 .part 文件，中断后重新发起同一任务可断点续传
 		"--socket-timeout", "60",
 		"--retries", "10",
 		"--fragment-retries", fragRetries,
@@ -459,7 +469,7 @@ func runYtdlpForURL(ctx context.Context, args []string, idx, total int, url stri
 }
 
 func downloadGeneral(ctx context.Context, req DownloadRequest,
-	emit func(string), emitProgress func(ProgressEvent)) {
+	emit func(string), emitProgress func(ProgressEvent)) (int, int) {
 	total := len(req.URLs)
 	workers := max(1, req.Workers)
 	emit(fmt.Sprintf("📥 共 %d 个任务，并发 %d 个", total, workers))
@@ -529,17 +539,19 @@ func downloadGeneral(ctx context.Context, req DownloadRequest,
 	} else {
 		emit(fmt.Sprintf("\n🎉 全部 %d 个任务下载完成", successCount))
 	}
+	return successCount, failCount
 }
 
-func downloadM3U8(ctx context.Context, req M3U8Request, emit func(string)) {
+func downloadM3U8(ctx context.Context, req M3U8Request, emit func(string)) (int, int) {
 	ffmpeg := getBinPath("ffmpeg")
 	total := len(req.URLs)
+	successCount, failCount := 0, 0
 
 	for i, url := range req.URLs {
 		select {
 		case <-ctx.Done():
 			emit("⏹ 已停止")
-			return
+			return successCount, failCount
 		default:
 		}
 		filename := fmt.Sprintf("video_%d.mp4", i+1)
@@ -559,24 +571,28 @@ func downloadM3U8(ctx context.Context, req M3U8Request, emit func(string)) {
 			}
 		}
 		if err := streamCommand(ctx, lineEmit, cmd); err != nil {
+			failCount++
 			emit(fmt.Sprintf("%s❌ 失败: %v", tag, err))
 		} else {
+			successCount++
 			emit(tag + "✅ 完成")
 		}
 	}
 	emit("\n🎉 所有任务完成")
+	return successCount, failCount
 }
 
-func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string), emitProgress func(ProgressEvent)) {
+func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string), emitProgress func(ProgressEvent)) (int, int) {
 	aria2c := getBinPath("aria2c")
 	total := len(req.Links)
+	successCount, failCount := 0, 0
 	emit(fmt.Sprintf("\n🧲 共 %d 个磁力任务", total))
 
 	for i, link := range req.Links {
 		select {
 		case <-ctx.Done():
 			emit("⏹ 已停止")
-			return
+			return successCount, failCount
 		default:
 		}
 		tag := fmt.Sprintf("[%d/%d] ", i+1, total)
@@ -603,6 +619,7 @@ func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string), e
 		args := []string{
 			aria2c,
 			"--dir", req.SaveDir,
+			"--continue=true", // 配合 .aria2 控制文件实现断点续传
 			"--max-connection-per-server=16",
 			"--split=16",
 			"--min-split-size=1M",
@@ -644,6 +661,7 @@ func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string), e
 			}
 		}
 		if err := streamCommand(ctx, lineEmit, cmd); err != nil {
+			failCount++
 			if ctx.Err() != nil {
 				emit(tag + "⏹ 已终止")
 				emitProgress(ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Status: "stopped"})
@@ -652,11 +670,13 @@ func downloadMagnet(ctx context.Context, req MagnetRequest, emit func(string), e
 				emitProgress(ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Status: "failed"})
 			}
 		} else {
+			successCount++
 			emit(tag + "✅ 下载完成")
 			emitProgress(ProgressEvent{TaskIdx: i, Total: total, URL: shortLink, Percent: 100, Status: "done"})
 		}
 	}
 	emit("\n🎉 所有磁力任务完成")
+	return successCount, failCount
 }
 
 func truncate(s string, n int) string {
